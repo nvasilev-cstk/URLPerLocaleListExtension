@@ -1,25 +1,25 @@
+import { createCmaClient } from './cmaClient.js';
 import { upsertLanguageUrlsMetadata } from './metadata.js';
 
 /**
- * Reads the configured field across all configured locales for the current entry,
- * builds a { locale: url } map, and writes it to Entry Metadata.
+ * Reads the configured field across every stack locale for the current entry, builds a
+ * { locale: url } map, and writes it to Entry Metadata.
  *
- * Everything here goes through the App SDK (appSdk.stack / appSdk.metadata), which rides
- * the editor's own authenticated session via Contentstack's parent-frame bridge — no
- * management token or region config needed.
+ * Locale reads go through the App SDK (appSdk.stack), riding the editor's own
+ * authenticated session — no token needed for those. The metadata write is the one call
+ * that goes straight to the real CMA host with a management token, bypassing
+ * appSdk.metadata's built-in bridge entirely — see cmaClient.js for why: that bridge
+ * routes through the web app's own internal domain, not the CMA that CDA actually reads
+ * from, so writes through it silently never become visible (confirmed against a live
+ * stack: a manual POST straight to the real CMA host worked immediately, no separate
+ * publish step needed, while identical-looking writes through the SDK bridge never did).
  *
  * Entry Metadata is anchored to a manually-created Extension UID (config.extensionUid),
- * NOT to any SDK-provided identifier. Both candidates that looked "free" turned out not
- * to work:
- *   - appSdk.installationUID (the per-stack app installation UID) is rejected outright by
- *     the CMA ("refers to an Extension that does not exist") — it's a different ID
- *     namespace (Mongo ObjectId) than real Extension UIDs (`blt...`).
- *   - appSdk.locationUID (this app's per-location `extension_uid`) IS a valid, accepted
- *     Extension UID, but isn't stable: confirmed against a real stack that creating a new
- *     entry and saving it for the first time (which reloads the editor page) produces a
- *     *different* locationUID on reload, silently orphaning the metadata record written
- *     before the reload instead of updating it. A manually-created Extension's UID never
- *     changes, since nothing in the entry/session lifecycle can touch it.
+ * not to any SDK-provided identifier — appSdk.installationUID is rejected by the CMA
+ * outright (wrong ID namespace), and appSdk.locationUID, while a valid Extension UID,
+ * isn't stable across certain page reloads (confirmed: creating and saving a new entry
+ * reloads the editor and mints a *different* locationUID, orphaning the prior write). A
+ * manually-created Extension's UID never changes.
  */
 export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
   const entry = sidebarWidget.entry;
@@ -34,6 +34,9 @@ export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
 
   if (!extensionUid) {
     throw new Error('No metadata anchor extension configured. Set one in the app configuration.');
+  }
+  if (!config.managementToken) {
+    throw new Error('No management token configured. Set one in the app configuration.');
   }
 
   if (!contentTypeUid) {
@@ -83,12 +86,20 @@ export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
     }
   }
 
+  const stackData = await stack.getData();
+  const apiKey = stackData.api_key || stackData.apiKey;
+  const cma = createCmaClient({
+    apiKey,
+    managementToken: config.managementToken,
+    region: appSdk.getCurrentRegion?.()
+  });
+
   // perLocale is already the complete, authoritative map — every sync re-reads every
-  // stack locale (see getStackLocaleCodes below), so there's no need to merge onto
-  // whatever was stored previously. Replacing outright also means a locale that gets
-  // unlocalized (or a stale fallback value from before the locale-fallback fix above)
-  // is correctly dropped on the next sync instead of lingering forever.
-  const metadata = await upsertLanguageUrlsMetadata(appSdk, {
+  // stack locale, so there's no need to merge onto whatever was stored previously.
+  // Replacing outright also means a locale that gets unlocalized (or a stale fallback
+  // value from before the locale-fallback fix above) is correctly dropped on the next
+  // sync instead of lingering forever.
+  const metadata = await upsertLanguageUrlsMetadata(cma, {
     entryUid,
     contentTypeUid,
     extensionUid,
@@ -98,7 +109,8 @@ export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
 
   let republish = { attempted: false };
   if (config.autoRepublish) {
-    republish = await republishCurrentLocale({ stack, contentTypeUid, entryUid, entryData, currentLocale });
+    const environments = getPublishedEnvironments(entryData, currentLocale);
+    republish = await republishCurrentLocale({ stack, contentTypeUid, entryUid, environments, currentLocale });
   }
 
   return {
@@ -108,6 +120,16 @@ export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
     syncedAt: new Date().toISOString(),
     metadataUid: metadata?.uid
   };
+}
+
+/**
+ * Environments the entry is already published to, for the given locale. Used to scope
+ * the optional entry republish — never publishes a locale/environment combo that wasn't
+ * already published.
+ */
+function getPublishedEnvironments(entryData, locale) {
+  const publishDetails = entryData?.publish_details || [];
+  return publishDetails.filter((pd) => pd.locale === locale).map((pd) => pd.environment);
 }
 
 /**
@@ -122,26 +144,22 @@ async function getStackLocaleCodes(stack) {
 }
 
 /**
- * Republishes the entry for the locale/environments it's already published in, so the
- * refreshed metadata becomes visible via CDA. Never publishes a locale/environment that
- * wasn't already published — this only refreshes existing publishes.
+ * Republishes the entry for the locale/environments it's already published in. Optional —
+ * unlike the metadata write itself (which the "manual POST works immediately" test showed
+ * doesn't need this), this just keeps the entry's own content fresh if the URL field
+ * itself changed. Never publishes a locale/environment that wasn't already published.
  *
  * NOTE: the exact payload shape .publish() forwards to Contentstack's parent frame isn't
  * pinned down in the public App SDK types (typed `any`) — this mirrors the documented CMA
  * "Publish an Entry" body (`{ entry: { environments, locales } }`). Verify against actual
  * behavior once running inside a real entry editor, and adjust if it errors.
  */
-async function republishCurrentLocale({ stack, contentTypeUid, entryUid, entryData, currentLocale }) {
+async function republishCurrentLocale({ stack, contentTypeUid, entryUid, environments, currentLocale }) {
+  if (environments.length === 0) {
+    return { attempted: false, reason: 'not-currently-published' };
+  }
+
   try {
-    const publishDetails = entryData?.publish_details || [];
-    const environments = publishDetails
-      .filter((pd) => pd.locale === currentLocale)
-      .map((pd) => pd.environment);
-
-    if (environments.length === 0) {
-      return { attempted: false, reason: 'not-currently-published' };
-    }
-
     await stack
       .ContentType(contentTypeUid)
       .Entry(entryUid)

@@ -10,6 +10,8 @@ export default function SidebarWidget({ appSdk }) {
   const [republish, setRepublish] = useState(null);
   const [lastSynced, setLastSynced] = useState(null);
   const configRef = useRef(null);
+  const syncInFlightRef = useRef(false);
+  const pendingSyncRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,9 +45,22 @@ export default function SidebarWidget({ appSdk }) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Only one sync runs at a time. Two nearly-simultaneous triggers (e.g. React
+  // StrictMode double-invoking the mount effect and the onSave registration in dev, or a
+  // fast double-click on "Sync now" in general) would otherwise both check "does metadata
+  // exist yet?" before either had written it, and both try to create — the second create
+  // then fails with "Metadata already exists" (confirmed against a real stack). A trigger
+  // that arrives while a sync is in flight is queued to run once, not dropped, so it
+  // still picks up anything that changed since the in-flight sync started.
   async function runSync() {
     const cfg = configRef.current;
     if (!cfg) return;
+
+    if (syncInFlightRef.current) {
+      pendingSyncRef.current = true;
+      return;
+    }
+    syncInFlightRef.current = true;
 
     setStatus('syncing');
     setErrorMessage('');
@@ -59,6 +74,12 @@ export default function SidebarWidget({ appSdk }) {
     } catch (err) {
       setErrorMessage(err?.message || 'Sync failed');
       setStatus('error');
+    } finally {
+      syncInFlightRef.current = false;
+      if (pendingSyncRef.current) {
+        pendingSyncRef.current = false;
+        runSync();
+      }
     }
   }
 

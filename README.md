@@ -12,18 +12,31 @@ that entirely — it reacts to the human save action, not to a CMA webhook.
 
 ## How it works
 
-Everything runs through the `@contentstack/app-sdk`, which proxies calls to Contentstack's
-own parent frame over its `postRobot` bridge — **no management token or region config
-needed**:
+Locale reads go through the `@contentstack/app-sdk`'s `appSdk.stack`, which rides the
+editor's own authenticated session — no token needed for those:
 
-- `appSdk.metadata` — the SDK's built-in Entry Metadata client
-  (`createMetaData`/`retrieveAllMetaData`/`updateMetaData`), which performs the
-  authenticated `/v3/metadata` calls on the app's behalf.
 - `appSdk.stack.ContentType(ct).Entry(uid).language(locale).fetch()` — reads the `url`
-  field for a given locale, riding the editor's own session.
+  field for a given locale.
 - `appSdk.stack.getLocales()` — the stack's full locale list, fetched fresh on every sync.
   There's no locale list to maintain in app config; adding a locale to the stack is
   enough for the next sync to start covering it.
+
+**The metadata write is different: it calls the real CMA host directly with a management
+token, bypassing the App SDK's own `appSdk.metadata` client entirely.** That client looked
+like the obvious choice — no token needed, proxies through Contentstack's own bridge — but
+it doesn't actually work: every `appSdk.metadata.*` call goes to
+`{region}-app.contentstack.com/api/v3/metadata` (the web app's own internal domain), not
+`{region}-api.contentstack.com/v3/metadata` (the real, public CMA that CDA and the entry's
+own `_metadata` block actually read from). Writes through the SDK bridge return `200` and
+even read back correctly through that *same* bridge, so the sidebar looked like it was
+working — but the write never reached the real backend, confirmed by it never showing up
+via a direct CMA fetch (`?include_metadata=true`) or CDA, no matter how the entry was
+published/republished. A manual `POST` straight to `{region}-api.contentstack.com/v3/metadata`
+worked immediately, no separate publish step needed, which is what led to this fix:
+`src/lib/cmaClient.js` builds an authenticated axios client for the real CMA host
+(`src/lib/regions.js` maps `appSdk.getCurrentRegion()`'s NA/EU/AZURE_NA/AZURE_EU to the
+right base URL — auto-detected, no config needed), and `src/lib/metadata.js` uses it
+directly instead of `appSdk.metadata`.
 
 Entry Metadata is anchored to a **manually-created Extension UID** stored in app config
 (`config.extensionUid`), not to any SDK-provided identifier. Two candidates that looked
@@ -41,8 +54,9 @@ like they'd let the app use its own installed identity both turned out not to wo
   entry/session lifecycle can touch it, so that's what this app anchors to instead. See
   "One-time setup" below for creating it.
 
-**App Configuration** screen (stack-level) stores: the metadata anchor extension UID, the
-field UID to read (default `url`), and whether to auto-republish after a sync.
+**App Configuration** screen (stack-level) stores: a management token (used only for the
+metadata write), the metadata anchor extension UID, the field UID to read (default
+`url`), and whether to auto-republish after a sync.
 
 **Entry Sidebar** widget syncs on mount, on entry save, and via a manual "Sync now"
 button. The App SDK has no dedicated event for unlocalizing a locale (only
@@ -58,8 +72,9 @@ drops the removed locale from the metadata map. Each sync:
    every stack locale, the fresh map is always the complete, authoritative one. This also
    means a locale that gets unlocalized is correctly dropped on the next sync.
 3. Optionally republishes the entry for locale/environment combinations that were
-   **already published**, via `stack.ContentType(ct).Entry(uid).publish(...)`, so the
-   metadata change becomes visible via CDA.
+   **already published**, via `stack.ContentType(ct).Entry(uid).publish(...)`, to keep the
+   entry's own content fresh if the `url` field itself changed. Not needed for the
+   metadata to show up — the direct CMA write is visible immediately.
 
 ### Why metadata, not a schema field
 
@@ -69,7 +84,8 @@ loop. Metadata writes don't bump the version or fire that event.
 
 ### CDA read shape
 
-Once synced and republished, fetch the entry with:
+Once synced, fetch the entry with (no publish/republish required beyond whatever
+publish state the entry itself is already in — CDA only serves published content):
 
 ```
 GET /v3/content_types/article/entries/{uid}?locale=en-us&include_metadata=true
@@ -79,7 +95,13 @@ The map is at `entry._metadata.extensions.{extension_uid}[0].language_urls`.
 
 ## One-time setup
 
-### 1. Create the metadata anchor extension
+### 1. Create a Management Token
+
+Settings → Tokens → Management Tokens → create one scoped to this stack. Used only for
+the metadata write (see "How it works" above) — paste it into the app's config screen in
+step 4.
+
+### 2. Create the metadata anchor extension
 
 Entry Metadata must reference an existing Extension, with a UID that never changes.
 Create one inert Custom Field extension that's never attached to a content type:
@@ -87,9 +109,9 @@ Create one inert Custom Field extension that's never attached to a content type:
 - Settings → Extensions → New → Custom Field (any minimal config is fine), **or**
 - `POST /v3/extensions` via CMA.
 
-Copy its UID — you'll paste it into the app's config screen in step 4.
+Copy its UID — you'll also paste this into the app's config screen in step 4.
 
-### 2. Register the App in Developer Hub
+### 3. Register the App in Developer Hub
 
 Organization → Developer Hub → Create App. Add two UI locations:
 
@@ -131,8 +153,8 @@ Hub each time, or use a paid ngrok plan / another tunnel provider with a stable 
 ### 4. Configure
 
 Open the app's config screen (Settings → Apps → Locale URL List Monitor → Configure) and
-set the metadata anchor extension UID (from step 1), the field UID to aggregate (`url`),
-and whether to auto-republish. Save.
+set the management token (from step 1), the metadata anchor extension UID (from step 2),
+the field UID to aggregate (`url`), and whether to auto-republish. Save.
 
 ### 5. Deploying to Contentstack Launch
 
@@ -142,16 +164,20 @@ Developer Hub to the Launch URL.
 
 ## Known limitations / things to verify
 
-- **`appSdk.metadata.*` responses carry an extra envelope layer** (`src/lib/metadata.js`).
-  Confirmed against the compiled SDK source: `appSdk.stack`'s methods (`getLocales`,
-  `getContentTypes`, ...) end with `.then(onData).catch(onError)`, which unwraps the
-  bridge's outer `{ data: ... }` wrapper — but `appSdk.metadata`'s methods
-  (`createMetaData`/`retrieveAllMetaData`/`updateMetaData`) return the raw
-  `sendToParent(...)` promise with no such unwrap. `unwrapOne`/`unwrapList` account for
-  this (`result.data.metadata` or `result.data`, falling back to `result.metadata` /
-  `result`). Without it, the existing-metadata lookup always came back empty, so every
-  sync tried to create a record that already existed and failed with "Metadata already
-  exists for the `{entity_uid}` entity UID."
+- **`appSdk.metadata` (the App SDK's built-in Entry Metadata client) doesn't actually
+  work** — this is the big one, and it's why `src/lib/metadata.js` calls the real CMA
+  directly instead (see "How it works"). Every `appSdk.metadata.*` call routes to
+  `{region}-app.contentstack.com/api/v3/metadata` — the web app's own internal domain —
+  not the real public CMA. Writes through it return `200`, read back correctly through
+  that same bridge, and even survive a lookup-then-update cycle correctly (so the sidebar
+  looks completely healthy) — but never propagate to whatever CDA and a direct CMA fetch
+  actually read from. Confirmed by HAR capture (write `200`s and reads back fine via
+  `eu-app.contentstack.com`) contrasted against a direct `include_metadata=true` fetch and
+  CDA both showing nothing, and then a manual `POST` straight to `eu-api.contentstack.com`
+  working immediately with no separate publish step. Along the way, also confirmed (now
+  moot, but documented in git history in case `appSdk.metadata` is revisited): its methods
+  don't unwrap the bridge's `{ data: ... }` envelope the way `appSdk.stack`'s methods do,
+  so a naive `result.metadata` read silently comes back `undefined`.
 - **`appSdk.stack.getLocales()` and `.Entry().fetch()` shapes** aren't pinned down in the
   public SDK types either, but empirically `.fetch()` resolves to `{ entry: {...} }`
   (confirmed — locale URLs now populate correctly after unwrapping `.entry`).
@@ -179,6 +205,15 @@ Developer Hub to the Launch URL.
   browser regardless of calling `preventDefault()`, logging "Blocked form submission...
   because the form's frame is sandboxed." Fixed by dropping `<form>` for a plain `<div>`
   and a `type="button"` with an `onClick` handler instead of `type="submit"`.
+- **Concurrent syncs race on create-vs-update** (`src/pages/SidebarWidget.jsx`). Two
+  nearly-simultaneous `runSync()` calls — confirmed via React StrictMode double-invoking
+  the mount effect and the `entry.onSave` registration in dev, but a fast double-click on
+  "Sync now" could trigger the same thing in production — both check "does metadata exist
+  yet?" before either has written it, and both try to `create`; the second one collides
+  and fails with "Metadata already exists for the `{entity_uid}` entity UID" (confirmed
+  against a real stack via HAR capture). Fixed with an in-flight guard: a trigger that
+  arrives while a sync is running gets queued to run once more after, instead of starting
+  a concurrent one.
 - **Cleanup after the `locationUID` anchor bug**: any entry synced before the fix that
   anchors to a manually-created extension (see "How it works") may have orphaned metadata
   records under stale, one-off `locationUID` values sitting alongside the real one. They're
