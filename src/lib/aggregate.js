@@ -6,14 +6,20 @@ import { upsertLanguageUrlsMetadata } from './metadata.js';
  *
  * Everything here goes through the App SDK (appSdk.stack / appSdk.metadata), which rides
  * the editor's own authenticated session via Contentstack's parent-frame bridge — no
- * management token, no region config, and no manually-created "anchor" extension. Entry
- * Metadata is anchored to this app's own location extension UID (appSdk.locationUID).
+ * management token or region config needed.
  *
- * NOTE: appSdk.installationUID (the per-stack app installation UID) looks like the more
- * "stable" identifier but the CMA rejects it for Entry Metadata's extension_uid ("refers
- * to an Extension that does not exist") — confirmed by testing against a real stack.
- * appSdk.locationUID is the value Contentstack's own init payload literally calls
- * `extension_uid`, and it's the one the metadata API accepts.
+ * Entry Metadata is anchored to a manually-created Extension UID (config.extensionUid),
+ * NOT to any SDK-provided identifier. Both candidates that looked "free" turned out not
+ * to work:
+ *   - appSdk.installationUID (the per-stack app installation UID) is rejected outright by
+ *     the CMA ("refers to an Extension that does not exist") — it's a different ID
+ *     namespace (Mongo ObjectId) than real Extension UIDs (`blt...`).
+ *   - appSdk.locationUID (this app's per-location `extension_uid`) IS a valid, accepted
+ *     Extension UID, but isn't stable: confirmed against a real stack that creating a new
+ *     entry and saving it for the first time (which reloads the editor page) produces a
+ *     *different* locationUID on reload, silently orphaning the metadata record written
+ *     before the reload instead of updating it. A manually-created Extension's UID never
+ *     changes, since nothing in the entry/session lifecycle can touch it.
  */
 export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
   const entry = sidebarWidget.entry;
@@ -24,7 +30,11 @@ export async function syncLocaleUrls({ appSdk, sidebarWidget, config }) {
   const contentTypeUid = entry.content_type?.uid;
   const fieldUid = config.fieldUid || 'url';
   const currentLocale = entry.locale;
-  const extensionUid = appSdk.locationUID;
+  const extensionUid = config.extensionUid;
+
+  if (!extensionUid) {
+    throw new Error('No metadata anchor extension configured. Set one in the app configuration.');
+  }
 
   if (!contentTypeUid) {
     throw new Error('Could not determine the content type UID for this entry.');

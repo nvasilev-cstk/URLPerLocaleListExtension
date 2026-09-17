@@ -29,7 +29,7 @@ body {
   margin-top: 12px;
 }
 
-.config-page form {
+.config-page .config-form {
   display: flex;
   flex-direction: column;
   gap: 16px;

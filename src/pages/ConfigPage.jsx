@@ -1,21 +1,26 @@
 import React, { useEffect, useState } from 'react';
 
 const DEFAULTS = {
+  extensionUid: '',
   fieldUid: 'url',
   autoRepublish: false
 };
 
 export default function ConfigPage({ appSdk }) {
-  const widget = appSdk.location.AppConfigWidget;
+  // appSdk.location.AppConfigWidget has no getConfig/setConfig of its own — that only
+  // exists on the top-level appSdk (which is what the Sidebar widget reads from). This
+  // location's actual API wraps everything under `installation`, with config nested in
+  // an `installationData.configuration` key.
+  const installation = appSdk.location.AppConfigWidget.installation;
   const [form, setForm] = useState(DEFAULTS);
   const [status, setStatus] = useState('loading'); // loading | idle | saving | saved | error
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
-    widget
-      .getConfig()
-      .then((cfg) => {
-        setForm({ ...DEFAULTS, ...cfg });
+    installation
+      .getInstallationData()
+      .then((data) => {
+        setForm({ ...DEFAULTS, ...data?.configuration });
         setStatus('idle');
       })
       .catch((err) => {
@@ -28,12 +33,12 @@ export default function ConfigPage({ appSdk }) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function handleSave(e) {
-    e.preventDefault();
+  async function handleSave() {
     setStatus('saving');
     setErrorMessage('');
     try {
-      await widget.setConfig(form);
+      const data = await installation.getInstallationData();
+      await installation.setInstallationData({ ...data, configuration: form });
       setStatus('saved');
     } catch (err) {
       setErrorMessage(err?.message || 'Failed to save configuration');
@@ -51,12 +56,32 @@ export default function ConfigPage({ appSdk }) {
       <p className="hint">
         Aggregates the localized URL field across every locale configured on this stack
         into Entry Metadata, so all locale URLs can be fetched with a single CDA call. No
-        management token, extension setup, or locale list to maintain here — locales are
-        read live from the stack on each sync, and metadata is anchored to this app's own
-        installation identity.
+        management token or locale list to maintain here — locales are read live from the
+        stack on each sync.
       </p>
 
-      <form onSubmit={handleSave}>
+      {/* A plain div, not <form>: Contentstack sandboxes this iframe without
+          allow-forms, so any native form submission is blocked outright regardless of
+          preventDefault(). The save button below is a plain click handler instead. */}
+      <div className="config-form">
+        <label>
+          Metadata anchor extension UID
+          <input
+            type="text"
+            value={form.extensionUid}
+            onChange={(e) => update('extensionUid', e.target.value)}
+            placeholder="UID of an inert Custom Field extension"
+            required
+          />
+          <small>
+            Entry Metadata must reference an existing Extension, and it must be one whose
+            UID never changes. Create one inert Custom Field extension (Settings →
+            Extensions → New → Custom Field, any minimal config), never attach it to a
+            content type, and paste its UID here. See README for why this can't just use
+            this app's own installation identity.
+          </small>
+        </label>
+
         <label>
           Field UID to aggregate
           <input
@@ -78,13 +103,13 @@ export default function ConfigPage({ appSdk }) {
           published)
         </label>
 
-        <button type="submit" disabled={status === 'saving'}>
+        <button type="button" onClick={handleSave} disabled={status === 'saving'}>
           {status === 'saving' ? 'Saving…' : 'Save configuration'}
         </button>
 
         {status === 'saved' && <p className="status-ok">Saved.</p>}
         {status === 'error' && <p className="status-error">{errorMessage}</p>}
-      </form>
+      </div>
     </div>
   );
 }

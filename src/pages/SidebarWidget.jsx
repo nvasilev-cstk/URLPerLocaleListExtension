@@ -1,10 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { syncLocaleUrls } from '../lib/aggregate.js';
-import { getLanguageUrlsMetadata } from '../lib/metadata.js';
 
 export default function SidebarWidget({ appSdk }) {
   const sidebarWidget = appSdk.location.SidebarWidget;
-  const [config, setConfig] = useState(null);
   const [languageUrls, setLanguageUrls] = useState({});
   const [status, setStatus] = useState('loading'); // loading | idle | syncing | error
   const [errorMessage, setErrorMessage] = useState('');
@@ -21,10 +19,13 @@ export default function SidebarWidget({ appSdk }) {
       .then(async (cfg) => {
         if (cancelled) return;
         configRef.current = cfg;
-        setConfig(cfg);
-        await loadExisting(cfg);
+        // Sync on every mount, not just on save. The App SDK has no dedicated event for
+        // unlocalizing a locale (only entrySave/entryChange/entryPublish/entryUnPublish
+        // exist) — unlocalizing reloads the entry editor, which remounts this sidebar, so
+        // this is the only reliable way to catch it and drop the removed locale from the
+        // metadata map.
+        await runSync();
         if (cancelled) return;
-        setStatus('idle');
       })
       .catch((err) => {
         if (cancelled) return;
@@ -32,7 +33,7 @@ export default function SidebarWidget({ appSdk }) {
         setStatus('error');
       });
 
-    // Auto-sync whenever the entry is saved.
+    // Also auto-sync whenever the entry is saved.
     sidebarWidget.entry.onSave(() => {
       runSync();
     });
@@ -41,21 +42,6 @@ export default function SidebarWidget({ appSdk }) {
       cancelled = true;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function loadExisting() {
-    try {
-      const existing = await getLanguageUrlsMetadata(appSdk, {
-        entryUid: sidebarWidget.entry.getData().uid,
-        contentTypeUid: sidebarWidget.entry.content_type?.uid,
-        extensionUid: appSdk.locationUID
-      });
-      if (existing) {
-        setLanguageUrls(existing.languageUrls);
-      }
-    } catch {
-      // No existing metadata yet, or a lookup error — non-fatal, "Sync now" will populate it.
-    }
-  }
 
   async function runSync() {
     const cfg = configRef.current;
@@ -94,7 +80,7 @@ export default function SidebarWidget({ appSdk }) {
       {status === 'error' && <p className="status-error">{errorMessage}</p>}
 
       {locales.length === 0 ? (
-        <p className="hint">No URLs synced yet. Click "Sync now" or save the entry.</p>
+        <p className="hint">No localized URLs found for this entry.</p>
       ) : (
         <table className="locale-url-table">
           <tbody>
