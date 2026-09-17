@@ -1,0 +1,41 @@
+{
+  "name": "Locale URL List Monitor",
+  "description": "Aggregates the localized `url` field of an entry into Entry Metadata as a single locale -> URL map, so all locale variants can be fetched with one CDA call.",
+  "target_type": "stack",
+  "visibility": "private",
+  "framework_version": "1.0",
+  "version": 1,
+  "ui_location": {
+    "locations": [
+      {
+        "type": "cs.cm.stack.config",
+        "meta": [
+          {
+            "path": "/",
+            "enabled": true,
+            "required": true,
+            "signed": true,
+            "description": "Configure management token, locales, and metadata anchor extension"
+          }
+        ]
+      },
+      {
+        "type": "cs.cm.stack.sidebar",
+        "meta": [
+          {
+            "path": "/",
+            "enabled": true,
+            "required": false,
+            "signed": true,
+            "description": "View and sync locale URLs for the current entry",
+            "extension_uid": ""
+          }
+        ]
+      }
+    ]
+  },
+  "hosting": {
+    "provider": "external",
+    "deployment_url": "https://d0f4-77-76-16-80.ngrok-free.app"
+  }
+}

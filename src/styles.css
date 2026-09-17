@@ -1,0 +1,128 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #1a1a2e;
+  background: #ffffff;
+}
+
+.app-shell {
+  padding: 16px;
+}
+
+.app-loading,
+.app-error {
+  color: #6b6b7b;
+}
+
+.hint {
+  color: #6b6b7b;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.hint.small {
+  font-size: 12px;
+  margin-top: 12px;
+}
+
+.config-page form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 480px;
+}
+
+.config-page label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.config-page label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-page input[type='text'],
+.config-page input[type='password'],
+.config-page select {
+  font-weight: 400;
+  padding: 8px 10px;
+  border: 1px solid #d5d5dd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.config-page small {
+  font-weight: 400;
+  color: #6b6b7b;
+}
+
+button {
+  background: #6c5ce7;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.status-ok {
+  color: #1a9e5c;
+  font-size: 13px;
+}
+
+.status-error {
+  color: #d9364a;
+  font-size: 13px;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.sidebar-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.locale-url-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.locale-url-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid #eeeeee;
+  vertical-align: top;
+  word-break: break-all;
+}
+
+.locale-cell {
+  font-weight: 600;
+  white-space: nowrap;
+  padding-right: 8px !important;
+}
+
+.warnings {
+  margin-top: 8px;
+}
