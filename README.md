@@ -10,6 +10,10 @@ delete) that hit an infinite-loop problem: writing the map to a schema field re-
 the same automation. Moving the logic into an App running client-side in the editor avoids
 that entirely — it reacts to the human save action, not to a CMA webhook.
 
+For step-by-step installation, day-to-day usage, and how to query the resulting data via
+CDA, see [INSTALLATION_AND_USAGE_GUIDE.md](INSTALLATION_AND_USAGE_GUIDE.md). This file
+covers how the app works internally and documents bugs found while building it.
+
 ## How it works
 
 Locale reads go through the `@contentstack/app-sdk`'s `appSdk.stack`, which rides the
