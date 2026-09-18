@@ -12,8 +12,27 @@ async function findExisting(cma, { entryUid, contentTypeUid, extensionUid }) {
     extension_uid: extensionUid
   });
   const { data } = await cma.get('/v3/metadata/', { params: { query } });
-  const [existing] = data.metadata || [];
-  return existing || null;
+  const matches = data.metadata || [];
+
+  if (matches.length <= 1) {
+    return matches[0] || null;
+  }
+
+  // More than one record for the same (entity, extension) pair means a duplicate was
+  // created at some point — most likely two page loads/mounts racing each other, a case
+  // the sidebar's own in-flight guard can't cover since it only serializes syncs within
+  // one already-open instance. Confirmed against a real stack: one record sat frozen at
+  // _version 1 while another kept growing, because a naive "take the first result" read
+  // happened to always land on the live one and silently ignored the dead one sitting
+  // right next to it. Self-heal instead: adopt whichever was updated most recently, and
+  // delete the rest so the duplicate doesn't linger forever.
+  const [winner, ...stale] = [...matches].sort(
+    (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
+  );
+  await Promise.all(
+    stale.map((record) => cma.delete(`/v3/metadata/${record.uid}`).catch(() => {}))
+  );
+  return winner;
 }
 
 export async function upsertLanguageUrlsMetadata(cma, { entryUid, contentTypeUid, extensionUid, locale, languageUrls }) {

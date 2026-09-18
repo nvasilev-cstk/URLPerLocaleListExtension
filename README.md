@@ -218,6 +218,17 @@ Developer Hub to the Launch URL.
   against a real stack via HAR capture). Fixed with an in-flight guard: a trigger that
   arrives while a sync is running gets queued to run once more after, instead of starting
   a concurrent one.
+- **The in-flight guard above doesn't cover every race** — it only serializes syncs
+  within one already-open sidebar instance, not across two separate tabs/page loads.
+  Confirmed against a real stack after several publishes: two metadata records existed
+  for the same (entity, extension) pair, one frozen at `_version: 1` with a single
+  locale, the other actively growing (`_version: 3`, every locale present). Root cause
+  was in `findExisting` (`src/lib/metadata.js`): it queried for matching records but
+  blindly took `data.metadata[0]`, so once a duplicate existed, lookups kept silently
+  picking the same "good" one and ignoring the dead one sitting next to it. Fixed by
+  making the lookup self-healing: when more than one record matches, it adopts whichever
+  was updated most recently and deletes the rest, so a duplicate gets cleaned up on the
+  very next sync instead of lingering forever.
 - **Cleanup after the `locationUID` anchor bug**: any entry synced before the fix that
   anchors to a manually-created extension (see "How it works") may have orphaned metadata
   records under stale, one-off `locationUID` values sitting alongside the real one. They're
